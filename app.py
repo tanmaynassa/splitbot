@@ -493,6 +493,10 @@ async def handle_text_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Send me a grocery invoice PDF to split.")
     return ConversationHandler.END
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the current operation."""
     context.user_data.clear()
     await update.message.reply_text("Cancelled. Send a new invoice whenever.")
     return ConversationHandler.END
