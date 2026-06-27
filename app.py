@@ -467,7 +467,11 @@ async def oauth_callback(request):
     state = request.query.get("state")  # telegram_id
 
     if not code or not state:
-        return web.Response(text="Missing code or state", status=400)
+        return web.Response(
+            text="<html><body style='font-family:sans-serif;text-align:center;padding:60px'>"
+                 "<h2>SplitBot</h2><p>Use the Telegram bot to get started.</p></body></html>",
+            content_type="text/html",
+        )
 
     try:
         tid = int(state)
@@ -576,6 +580,7 @@ async def main():
     app = web.Application()
     app.router.add_post("/webhook", telegram_webhook)
     app.router.add_get("/auth/callback", oauth_callback)
+    app.router.add_get("/", oauth_callback)
     app.router.add_get("/health", health)
 
     runner = web.AppRunner(app)
