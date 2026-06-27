@@ -43,7 +43,8 @@ def get_callback_url():
     url = RENDER_URL
     if not url.startswith("http"):
         url = f"https://{url}"
-    return f"{url}/auth/callback"
+    # Use root URL — Splitwise strips /auth/callback from some registrations
+    return url
 
 
 # ── Commands ──
