@@ -262,6 +262,4 @@ def format_split_summary(split: dict, order_date: str, user_name: str, flatmate_
             fm_name = flatmate_names.get(fm_id, "Flatmate")
             lines.append(f"📌 *{fm_name} owes you:* ₹{share:.2f}")
 
-    lines.append(f"\nType `ok` to confirm or `cancel` to discard.")
-
     return "\n".join(lines)

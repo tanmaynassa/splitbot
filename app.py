@@ -400,6 +400,13 @@ async def handle_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = user.get("splitwise_name", "You")
 
     msg = format_split_summary(split, parsed.get("order_date", ""), user_name, fm_display)
+
+    # Remind about rest split among if not specified
+    if split_among is None and len(flatmates) > 1:
+        msg += f"\n\n💡 _Shared items are splitting among everyone. Add `rest split among: me, name` to change._"
+
+    msg += f"\n\n_Send new tags to re-split, `ok` to confirm, or `cancel` to discard._"
+
     await update.message.reply_text(msg, parse_mode="Markdown")
 
     return CONFIRMING
@@ -416,8 +423,8 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     if text != "ok":
-        await update.message.reply_text("Type `ok` to confirm or `cancel` to discard.", parse_mode="Markdown")
-        return CONFIRMING
+        # Treat as new tags — user wants to re-split
+        return await handle_tags(update, context)
 
     parsed = context.user_data.get("parsed")
     split = context.user_data.get("split")
