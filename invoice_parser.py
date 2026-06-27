@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 def parse_invoice(pdf_path: str) -> dict:
     """
     Parse a grocery invoice PDF. Auto-detects platform.
-    Returns dict with platform, order_date, order_no, items list, and total.
+    Returns dict with platform, order_date, order_no, items, total, extra_charges.
     """
     with pdfplumber.open(pdf_path) as pdf:
         full_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
@@ -21,88 +21,62 @@ def parse_invoice(pdf_path: str) -> dict:
     # Detect platform
     text_lower = full_text.lower()
     if "zeptonow" in text_lower or "zepto" in text_lower:
-        return _parse_zepto(all_tables, full_text)
+        return _parse_invoice(all_tables, full_text, "Zepto")
     elif "blinkit" in text_lower or "grofers" in text_lower or "locodel" in text_lower:
-        return _parse_blinkit(all_tables, full_text)
+        return _parse_invoice(all_tables, full_text, "Blinkit")
     else:
-        # Generic fallback — try to extract any table with items and prices
-        return _parse_generic(all_tables, full_text)
+        return _parse_invoice(all_tables, full_text, "Unknown")
 
 
-def _parse_zepto(all_tables: list, full_text: str) -> dict:
-    """Parse Zepto invoice PDF."""
-    if len(all_tables) < 2:
-        raise ValueError("Could not find item table in Zepto invoice")
-
+def _parse_invoice(all_tables: list, full_text: str, platform: str) -> dict:
+    """Common parser for all platforms."""
     items = _extract_items_from_tables(all_tables)
+    items_total = sum(item["amount"] for item in items)
 
-    # Extract date and order number
-    order_date = ""
-    order_no = ""
-
-    date_match = re.search(r"Date\s*:\s*([\d\-]+)", full_text)
-    if date_match:
-        order_date = date_match.group(1)
-
-    order_match = re.search(r"Order No\.?:\s*(\S+)", full_text)
-    if order_match:
-        order_no = order_match.group(1)
-
-    return {
-        "platform": "Zepto",
-        "order_date": order_date,
-        "order_no": order_no,
-        "items": items,
-        "total": sum(item["amount"] for item in items),
-    }
-
-
-def _parse_blinkit(all_tables: list, full_text: str) -> dict:
-    """Parse Blinkit invoice PDF."""
-    items = _extract_items_from_tables(all_tables)
-
-    # Blinkit date/order extraction
-    order_date = ""
-    order_no = ""
-
-    date_match = re.search(r"Date\s*[:\-]\s*([\d\-/]+)", full_text)
-    if date_match:
-        order_date = date_match.group(1)
-
-    order_match = re.search(r"(?:Order|Invoice)\s*(?:No|ID|#)\.?\s*[:\-]?\s*(\S+)", full_text, re.IGNORECASE)
-    if order_match:
-        order_no = order_match.group(1)
-
-    return {
-        "platform": "Blinkit",
-        "order_date": order_date,
-        "order_no": order_no,
-        "items": items,
-        "total": sum(item["amount"] for item in items),
-    }
-
-
-def _parse_generic(all_tables: list, full_text: str) -> dict:
-    """Generic fallback parser for unknown invoice formats."""
-    items = _extract_items_from_tables(all_tables)
-
+    # Extract date
     order_date = ""
     date_match = re.search(r"Date\s*[:\-]\s*([\d\-/]+)", full_text)
     if date_match:
         order_date = date_match.group(1)
 
+    # Extract order number
     order_no = ""
     order_match = re.search(r"(?:Order|Invoice)\s*(?:No|ID|#)\.?\s*[:\-]?\s*(\S+)", full_text, re.IGNORECASE)
     if order_match:
         order_no = order_match.group(1)
 
+    # Extract invoice total (includes delivery charges, rounding etc.)
+    invoice_total = _extract_invoice_total(full_text)
+    extra_charges = round(invoice_total - items_total, 2) if invoice_total > items_total else 0
+
     return {
-        "platform": "Unknown",
+        "platform": platform,
         "order_date": order_date,
         "order_no": order_no,
         "items": items,
-        "total": sum(item["amount"] for item in items),
+        "items_total": items_total,
+        "extra_charges": extra_charges,
+        "total": invoice_total if invoice_total > 0 else items_total,
     }
+
+
+def _extract_invoice_total(full_text: str) -> float:
+    """Extract the final invoice total from the PDF text."""
+    for pattern in [
+        r"Invoice\s*Value\s*[\s:₹]*(\d[\d,.]+)",
+        r"Grand\s*Total\s*[\s:₹]*(\d[\d,.]+)",
+        r"Net\s*(?:Payable|Amount)\s*[\s:₹]*(\d[\d,.]+)",
+        r"Total\s*(?:Amount|Payable)\s*[\s:₹]*(\d[\d,.]+)",
+        r"Amount\s*Paid\s*[\s:₹]*(\d[\d,.]+)",
+    ]:
+        match = re.search(pattern, full_text, re.IGNORECASE)
+        if match:
+            val = match.group(1).replace(",", "")
+            try:
+                return float(val)
+            except ValueError:
+                continue
+    return 0.0
 
 
 def _extract_items_from_tables(all_tables: list) -> list:
@@ -111,7 +85,6 @@ def _extract_items_from_tables(all_tables: list) -> list:
 
     for table in all_tables:
         for row in table:
-            # Find the SR No — could be at index 0 or 1 depending on page layout
             sr_no = None
             sr_idx = None
             for idx in range(min(3, len(row))):
@@ -124,7 +97,6 @@ def _extract_items_from_tables(all_tables: list) -> list:
             if sr_no is None:
                 continue
 
-            # Item name is the next column after SR No
             name_idx = sr_idx + 1
             if name_idx >= len(row):
                 continue
@@ -140,7 +112,6 @@ def _extract_items_from_tables(all_tables: list) -> list:
             except (ValueError, TypeError):
                 continue
 
-            # Avoid duplicate SR numbers
             if not any(i["sr"] == int(sr_no) for i in items):
                 items.append({
                     "sr": int(sr_no),
@@ -155,7 +126,12 @@ def format_item_list(parsed: dict, flatmate_names: list) -> str:
     """Format parsed invoice into a numbered list for Telegram."""
     platform = parsed.get("platform", "")
     lines = [f"🛒 *{platform} Order — {parsed['order_date']}*"]
-    lines.append(f"Total: ₹{parsed['total']:.2f}\n")
+    lines.append(f"Total: ₹{parsed['total']:.2f}")
+
+    if parsed.get("extra_charges", 0) > 0:
+        lines.append(f"_(includes ₹{parsed['extra_charges']:.2f} delivery/fees)_")
+
+    lines.append("")
 
     for item in parsed["items"]:
         lines.append(f"`{item['sr']}.` {item['name']} — ₹{item['amount']:.2f}")
@@ -170,24 +146,19 @@ def format_item_list(parsed: dict, flatmate_names: list) -> str:
     return "\n".join(lines)
 
 
-def compute_split(items: list, personal_indices: list, flatmate_tagged: dict, flatmate_ids: dict, num_splitters: int, split_among: dict = None) -> dict:
+def compute_split(items: list, personal_indices: list, flatmate_tagged: dict, flatmate_ids: dict, num_splitters: int, split_among: dict = None, extra_charges: float = 0) -> dict:
     """
     Compute the expense split.
-    personal_indices: item SRs that are the user's only
-    flatmate_tagged: {flatmate_name: [item SRs]} for each flatmate's personal items
-    flatmate_ids: {flatmate_name: splitwise_user_id}
-    num_splitters: total people sharing (for equal split of shared items)
-    split_among: optional dict {"include_self": bool, "flatmate_ids": [ids]} — who shares the rest
+    extra_charges: delivery fees etc. — split among the sharing group.
     """
     personal_total = 0.0
     shared_total = 0.0
 
     personal_items = []
     shared_items = []
-    flatmate_items = {}  # {splitwise_user_id: [items]}
-    flatmate_totals = {}  # {splitwise_user_id: total}
+    flatmate_items = {}
+    flatmate_totals = {}
 
-    # Collect flatmate personal items
     all_flatmate_srs = set()
     for fm_name, srs in flatmate_tagged.items():
         fm_id = flatmate_ids[fm_name]
@@ -195,7 +166,6 @@ def compute_split(items: list, personal_indices: list, flatmate_tagged: dict, fl
         flatmate_totals[fm_id] = 0.0
         all_flatmate_srs.update(srs)
 
-    # Initialize all flatmate totals
     for fm_name, fm_id in flatmate_ids.items():
         if fm_id not in flatmate_items:
             flatmate_items[fm_id] = []
@@ -216,39 +186,36 @@ def compute_split(items: list, personal_indices: list, flatmate_tagged: dict, fl
             shared_total += item["amount"]
             shared_items.append(item)
 
-    # Determine who splits the shared items
+    # Determine who splits the shared items + delivery charges
     if split_among:
         actual_splitters = len(split_among["flatmate_ids"])
         if split_among["include_self"]:
             actual_splitters += 1
-        shared_each = round(shared_total / actual_splitters, 2) if actual_splitters > 0 else 0
     else:
         actual_splitters = num_splitters
-        shared_each = round(shared_total / num_splitters, 2) if num_splitters > 0 else 0
+
+    # Add delivery charges to shared pool
+    shared_pool = shared_total + extra_charges
+    shared_each = round(shared_pool / actual_splitters, 2) if actual_splitters > 0 else 0
 
     # Calculate shares
     shares = {}
 
-    # User's share
     if split_among is None or split_among["include_self"]:
         shares["user"] = round(personal_total + shared_each, 2)
     else:
         shares["user"] = round(personal_total, 2)
 
-    # Flatmate shares
     for fm_name, fm_id in flatmate_ids.items():
         personal_fm = flatmate_totals.get(fm_id, 0)
         if split_among is None:
-            # Everyone splits shared
             shares[fm_id] = round(personal_fm + shared_each, 2)
         elif fm_id in split_among["flatmate_ids"]:
-            # This flatmate is in the split group
             shares[fm_id] = round(personal_fm + shared_each, 2)
         else:
-            # This flatmate only pays personal items
             shares[fm_id] = round(personal_fm, 2)
 
-    order_total = round(personal_total + shared_total + sum(flatmate_totals.values()), 2)
+    order_total = round(personal_total + shared_total + extra_charges + sum(flatmate_totals.values()), 2)
 
     return {
         "personal_items": personal_items,
@@ -256,6 +223,7 @@ def compute_split(items: list, personal_indices: list, flatmate_tagged: dict, fl
         "flatmate_items": flatmate_items,
         "personal_total": personal_total,
         "shared_total": shared_total,
+        "extra_charges": extra_charges,
         "shared_each": shared_each,
         "order_total": order_total,
         "shares": shares,
@@ -263,9 +231,7 @@ def compute_split(items: list, personal_indices: list, flatmate_tagged: dict, fl
 
 
 def format_split_summary(split: dict, order_date: str, user_name: str, flatmate_names: dict) -> str:
-    """Format the split result into a confirmation message.
-    flatmate_names: {splitwise_user_id: display_name}
-    """
+    """Format the split result into a confirmation message."""
     lines = [f"📊 *Split Summary — {order_date}*\n"]
 
     if split["personal_items"]:
@@ -285,6 +251,9 @@ def format_split_summary(split: dict, order_date: str, user_name: str, flatmate_
         names = ", ".join(i["name"] for i in split["shared_items"])
         lines.append(f"🔀 *Shared (equal split):* ₹{split['shared_total']:.2f} → ₹{split['shared_each']:.2f} each")
         lines.append(f"   _{names}_\n")
+
+    if split.get("extra_charges", 0) > 0:
+        lines.append(f"🚚 *Delivery/fees:* ₹{split['extra_charges']:.2f} _(split equally)_\n")
 
     lines.append(f"💰 *You paid:* ₹{split['order_total']:.2f}")
 
