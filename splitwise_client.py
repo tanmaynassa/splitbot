@@ -67,7 +67,7 @@ class SplitwiseClient:
         name_lower = name.lower()
         return [
             f for f in friends
-            if name_lower in f"{f.get('first_name', '')} {f.get('last_name', '')}".lower()
+            if name_lower in f"{f.get('first_name') or ''} {f.get('last_name') or ''}".lower()
         ]
 
     def create_expense(

@@ -47,6 +47,24 @@ def get_callback_url():
     return url
 
 
+async def handle_text_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Catch text messages when user might be sending flatmate names after OAuth."""
+    tid = update.effective_user.id
+    user = db.get_user(tid)
+
+    if user and user.get("splitwise_token") and not user.get("setup_complete"):
+        # User connected Splitwise but hasn't set up flatmates — treat as name input
+        return await handle_flatmate_names(update, context)
+
+    # Fully set up user sending random text
+    if user and user.get("setup_complete"):
+        await update.message.reply_text("Send me a grocery invoice PDF to split, or /start for help.")
+    else:
+        await update.message.reply_text("Send /start to get started.")
+
+    return ConversationHandler.END
+
+
 # ── Commands ──
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -145,7 +163,9 @@ async def handle_flatmate_names(update: Update, context: ContextTypes.DEFAULT_TY
         matches = sw.find_friends_by_name(name)
         if matches:
             best = matches[0]
-            full_name = f"{best.get('first_name', '')} {best.get('last_name', '')}".strip()
+            first = best.get('first_name') or ''
+            last = best.get('last_name') or ''
+            full_name = f"{first} {last}".strip()
             found.append({"name": full_name, "id": best["id"], "search": name})
         else:
             not_found.append(name)
@@ -454,7 +474,25 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_text_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Catch text messages from users who just finished OAuth and need flatmate setup."""
+    tid = update.effective_user.id
+    user = db.get_user(tid)
+
+    if not user:
+        await update.message.reply_text("Send /start to get started.")
+        return ConversationHandler.END
+
+    if not user.get("splitwise_token"):
+        await update.message.reply_text("Connect Splitwise first. Send /start")
+        return ConversationHandler.END
+
+    if not user.get("setup_complete"):
+        # User just connected — treat this message as flatmate names
+        return await handle_flatmate_names(update, context)
+
+    await update.message.reply_text("Send me a grocery invoice PDF to split.")
+    return ConversationHandler.END
     context.user_data.clear()
     await update.message.reply_text("Cancelled. Send a new invoice whenever.")
     return ConversationHandler.END
@@ -482,7 +520,7 @@ async def oauth_callback(request):
         # Get user info from Splitwise
         sw = SplitwiseClient(access_token)
         sw_user = sw.get_current_user()
-        sw_name = f"{sw_user.get('first_name', '')} {sw_user.get('last_name', '')}".strip()
+        sw_name = f"{sw_user.get('first_name') or ''} {sw_user.get('last_name') or ''}".strip()
 
         # Store in DB
         db.update_user(
@@ -537,6 +575,7 @@ async def main():
             CommandHandler("start", start),
             CommandHandler("setup", setup),
             MessageHandler(filters.Document.PDF, handle_pdf),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_entry),
         ],
         states={
             SETUP_FLATMATES: [
