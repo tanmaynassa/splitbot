@@ -276,6 +276,11 @@ def compute_split(items: list, personal_indices: list, flatmate_tagged: dict, fl
 
     order_total = round(personal_total + shared_total + extra_charges + sum(flatmate_totals.values()) + sum(gs["item"]["amount"] for gs in group_split_items), 2)
 
+    # Fix rounding: payer absorbs any difference so shares add up exactly
+    shares_sum = round(sum(shares.values()), 2)
+    if shares_sum != order_total:
+        shares["user"] = round(shares["user"] + (order_total - shares_sum), 2)
+
     return {
         "personal_items": personal_items,
         "shared_items": shared_items,
