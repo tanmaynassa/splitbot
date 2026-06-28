@@ -371,9 +371,11 @@ async def handle_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 group_splits.append({"people": resolved_people, "srs": srs})
 
         # Now parse individual tags from the cleaned text
-        mine_match = re.search(r"\bmine\b\s*:?\s*([\d,\s]+)", clean_text)
+        mine_match = re.search(r"\b(?:mine|me)\b\s*:?\s*([\d,\s]+)", clean_text)
         if mine_match:
-            personal_indices = [int(x) for x in re.findall(r'\d+', mine_match.group(1))]
+            found_nums = [int(x) for x in re.findall(r'\d+', mine_match.group(1))]
+            if found_nums:
+                personal_indices = found_nums
 
         for fm_key, fm_record in fm_lookup.items():
             fm_match = re.search(rf"\b{fm_key}\b\s*:?\s*([\d,\s]+)", clean_text)
