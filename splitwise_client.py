@@ -134,38 +134,37 @@ class SplitwiseClient:
 
 
 def build_expense_details(split: dict, user_name: str, flatmate_names: dict) -> str:
-    """Build itemized notes for the Splitwise expense.
-    flatmate_names: {splitwise_user_id: display_name}
-    """
-    lines = ["— Order Breakdown —", ""]
+    """Build simple, readable notes for the Splitwise expense."""
+    lines = []
 
     if split["personal_items"]:
-        lines.append(f"{user_name}'s items:")
-        for item in split["personal_items"]:
-            lines.append(f"  • {item['name']} — ₹{item['amount']:.2f}")
-        lines.append(f"  Subtotal: ₹{split['personal_total']:.2f}")
-        lines.append("")
+        items = ", ".join(f"{i['name']} ₹{i['amount']:.0f}" for i in split["personal_items"])
+        lines.append(f"{user_name}'s: {items}")
 
     for fm_id, items in split.get("flatmate_items", {}).items():
-        fm_name = flatmate_names.get(fm_id, "Flatmate")
-        lines.append(f"{fm_name}'s items:")
-        for item in items:
-            lines.append(f"  • {item['name']} — ₹{item['amount']:.2f}")
-        subtotal = sum(i["amount"] for i in items)
-        lines.append(f"  Subtotal: ₹{subtotal:.2f}")
-        lines.append("")
+        if items:
+            fm_name = flatmate_names.get(fm_id, "Flatmate")
+            item_str = ", ".join(f"{i['name']} ₹{i['amount']:.0f}" for i in items)
+            lines.append(f"{fm_name}'s: {item_str}")
+
+    for gs in split.get("group_split_items", []):
+        people = " & ".join(gs["people"])
+        lines.append(f"{gs['item']['name']} ₹{gs['item']['amount']:.0f} split between {people} (₹{gs['per_person']:.0f} each)")
 
     if split["shared_items"]:
-        lines.append("Shared items (split equally):")
-        for item in split["shared_items"]:
-            lines.append(f"  • {item['name']} — ₹{item['amount']:.2f}")
-        lines.append(f"  Subtotal: ₹{split['shared_total']:.2f}")
-        lines.append("")
+        items = ", ".join(f"{i['name']} ₹{i['amount']:.0f}" for i in split["shared_items"])
+        lines.append(f"Shared: {items} (₹{split['shared_each']:.0f} each)")
 
-    lines.append("— Split —")
-    lines.append(f"{user_name} paid: ₹{split['order_total']:.2f}")
-    for person, share in split["shares"].items():
-        name = user_name if person == "user" else flatmate_names.get(person, "Flatmate")
-        lines.append(f"{name}'s share: ₹{share:.2f}")
+    if split.get("extra_charges", 0) > 0:
+        lines.append(f"Delivery/fees: ₹{split['extra_charges']:.0f}")
+
+    lines.append("")
+    lines.append(f"Total: ₹{split['order_total']:.0f}")
+    lines.append(f"{user_name} paid the full bill")
+
+    for fm_id, share in split["shares"].items():
+        if fm_id != "user" and share > 0:
+            fm_name = flatmate_names.get(fm_id, "Flatmate")
+            lines.append(f"{fm_name} owes: ₹{share:.0f}")
 
     return "\n".join(lines)
