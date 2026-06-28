@@ -589,6 +589,27 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /help."""
+    await update.message.reply_text(
+        "🛒 *SplitBot — Commands*\n\n"
+        "/start — connect Splitwise & set up\n"
+        "/setup — change your flatmates\n"
+        "/reset — disconnect and start over\n"
+        "/cancel — cancel current operation\n"
+        "/help — show this message\n\n"
+        "Just send a grocery invoice PDF to split!",
+        parse_mode="Markdown",
+    )
+
+
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Catch unrecognized commands."""
+    await update.message.reply_text(
+        "Unknown command. Try /help to see available commands.",
+    )
+
+
 async def handle_confirm_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle group selection confirmation."""
     tid = update.effective_user.id
@@ -745,6 +766,13 @@ async def main():
     )
 
     bot_app.add_handler(conv_handler)
+
+    # Standalone commands (work outside conversations too)
+    bot_app.add_handler(CommandHandler("reset", reset))
+    bot_app.add_handler(CommandHandler("help", help_cmd))
+
+    # Catch-all for unrecognized commands
+    bot_app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
 
     # Initialize bot
     await bot_app.initialize()
