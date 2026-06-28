@@ -300,14 +300,14 @@ async def handle_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
         personal_indices = []
         flatmate_tagged = {}  # {flatmate_name: [sr_numbers]}
 
-        mine_match = re.search(r"mine\s*:?\s*([\d,\s]+)", text)
+        mine_match = re.search(r"\bmine\b\s*:?\s*([\d,\s]+)", text)
         if mine_match:
-            personal_indices = [int(x.strip()) for x in mine_match.group(1).split(",") if x.strip().isdigit()]
+            personal_indices = [int(x) for x in re.findall(r'\d+', mine_match.group(1))]
 
         for fm_key, fm_record in fm_lookup.items():
-            fm_match = re.search(rf"{fm_key}\s*:?\s*([\d,\s]+)", text)
+            fm_match = re.search(rf"\b{fm_key}\b\s*:?\s*([\d,\s]+)", text)
             if fm_match:
-                srs = [int(x.strip()) for x in fm_match.group(1).split(",") if x.strip().isdigit()]
+                srs = [int(x) for x in re.findall(r'\d+', fm_match.group(1))]
                 flatmate_tagged[fm_key] = srs
 
         if not mine_match and not flatmate_tagged:
@@ -343,13 +343,13 @@ async def handle_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Parse "split among" / "rest between" — optional line
     split_among_match = re.search(
-        r"(?:rest split among|rest among|rest between|rest split between|rest)\s*:?\s*(.+)",
+        r"\b(?:rest split among|rest among|rest between|rest split between|rest)\b\s*:?\s*(.+)",
         text,
     )
 
     # Determine who shares the remaining (untagged) items
     if split_among_match:
-        split_names_raw = [n.strip().lower() for n in split_among_match.group(1).split(",")]
+        split_names_raw = re.findall(r'[a-zA-Z]+', split_among_match.group(1).lower())
         splitter_ids = []
         include_self = False
 

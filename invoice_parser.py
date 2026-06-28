@@ -24,6 +24,8 @@ def parse_invoice(pdf_path: str) -> dict:
         return _parse_invoice(all_tables, full_text, "Zepto")
     elif "blinkit" in text_lower or "grofers" in text_lower or "locodel" in text_lower:
         return _parse_invoice(all_tables, full_text, "Blinkit")
+    elif "swiggy" in text_lower or "instamart" in text_lower or "handling fee" in text_lower:
+        return _parse_invoice(all_tables, full_text, "Swiggy Instamart")
     else:
         return _parse_invoice(all_tables, full_text, "Unknown")
 
@@ -35,7 +37,7 @@ def _parse_invoice(all_tables: list, full_text: str, platform: str) -> dict:
 
     # Extract date
     order_date = ""
-    date_match = re.search(r"Date\s*[:\-]\s*([\d\-/]+)", full_text)
+    date_match = re.search(r"Date\s*(?:of\s*Invoice)?\s*[:\-]\s*([\d\-/]+)", full_text)
     if date_match:
         order_date = date_match.group(1)
 
@@ -62,6 +64,10 @@ def _parse_invoice(all_tables: list, full_text: str, platform: str) -> dict:
 
 def _extract_invoice_total(full_text: str) -> float:
     """Extract the final invoice total from the PDF text."""
+    invoice_value = 0.0
+    handling_fee = 0.0
+
+    # Get base invoice value
     for pattern in [
         r"Invoice\s*Value\s*[\s:₹]*(\d[\d,.]+)",
         r"Grand\s*Total\s*[\s:₹]*(\d[\d,.]+)",
@@ -73,10 +79,29 @@ def _extract_invoice_total(full_text: str) -> float:
         if match:
             val = match.group(1).replace(",", "")
             try:
-                return float(val)
+                invoice_value = float(val)
+                break
             except ValueError:
                 continue
-    return 0.0
+
+    # Check for handling/delivery fee
+    fee_match = re.search(
+        r"(?:Handling|Delivery|Platform)\s*(?:Fee|Charge|Charges)\s*[^₹\d]*[\s₹]*(\d[\d,.]+)",
+        full_text, re.IGNORECASE,
+    )
+    if fee_match:
+        try:
+            handling_fee = float(fee_match.group(1).replace(",", ""))
+        except ValueError:
+            pass
+
+    # Also look for "Amount in words" as the final total
+    words_match = re.search(r"Amount\s*in\s*words\s*:\s*(.+?)(?:Rupees|Only)", full_text, re.IGNORECASE)
+    if words_match and invoice_value > 0 and handling_fee > 0:
+        # Use invoice_value + handling_fee as the total
+        return invoice_value + handling_fee
+
+    return invoice_value + handling_fee if invoice_value > 0 else 0.0
 
 
 def _extract_items_from_tables(all_tables: list) -> list:
@@ -88,8 +113,8 @@ def _extract_items_from_tables(all_tables: list) -> list:
             sr_no = None
             sr_idx = None
             for idx in range(min(3, len(row))):
-                cell = (row[idx] or "").strip()
-                if cell.isdigit():
+                cell = (row[idx] or "").strip().rstrip(".")
+                if cell.isdigit() and int(cell) > 0:
                     sr_no = cell
                     sr_idx = idx
                     break
@@ -104,7 +129,7 @@ def _extract_items_from_tables(all_tables: list) -> list:
             item_name = (row[name_idx] or "").replace("\n", " ").strip()
             item_name = re.sub(r"\s+", " ", item_name)
 
-            if not item_name:
+            if not item_name or item_name.upper() == "NOS":
                 continue
 
             try:
