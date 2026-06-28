@@ -377,6 +377,9 @@ async def handle_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for fm_key, fm_record in fm_lookup.items():
             fm_match = re.search(rf"\b{fm_key}\b\s*:?\s*([\d,\s]+)", clean_text)
+            if fm_match:
+                srs = [int(x) for x in re.findall(r'\d+', fm_match.group(1))]
+                flatmate_tagged[fm_key] = srs
 
         if not mine_match and not flatmate_tagged and not group_splits:
             fm_examples = "\n".join(f"`{name}: 3`" for name in fm_lookup.keys())
