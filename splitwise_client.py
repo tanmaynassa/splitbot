@@ -61,6 +61,29 @@ class SplitwiseClient:
     def get_friends(self) -> list:
         return self._get("get_friends")["friends"]
 
+    def get_groups(self) -> list:
+        """Get all groups the user is part of."""
+        return self._get("get_groups")["groups"]
+
+    def find_group_with_members(self, member_ids: list) -> list:
+        """Find groups that contain ALL the specified member IDs (plus the current user)."""
+        groups = self.get_groups()
+        matching = []
+        member_set = set(member_ids)
+
+        for group in groups:
+            if group.get("id") == 0:  # skip "non-group expenses"
+                continue
+            group_member_ids = {m["id"] for m in group.get("members", [])}
+            if member_set.issubset(group_member_ids):
+                matching.append({
+                    "id": group["id"],
+                    "name": group.get("name", "Unnamed Group"),
+                    "member_count": len(group.get("members", [])),
+                })
+
+        return matching
+
     def find_friends_by_name(self, name: str) -> list:
         """Find friends whose name contains the search string."""
         friends = self.get_friends()

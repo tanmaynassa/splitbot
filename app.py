@@ -33,7 +33,7 @@ RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 PORT = int(os.environ.get("PORT", 10000))
 
 # Conversation states
-SETUP_FLATMATES, CONFIRM_FLATMATES, AWAITING_TAGS, CONFIRMING = range(4)
+SETUP_FLATMATES, CONFIRM_FLATMATES, CONFIRM_GROUP, AWAITING_TAGS, CONFIRMING = range(5)
 
 # Global bot app
 bot_app = Application.builder().token(TOKEN).build()
@@ -211,15 +211,49 @@ async def handle_confirm_flatmates(update: Update, context: ContextTypes.DEFAULT
     for f in pending:
         db.add_flatmate(tid, f["name"], f["id"])
 
-    db.update_user(tid, setup_complete=True)
     context.user_data.pop("pending_flatmates", None)
 
-    names = ", ".join(f["name"] for f in pending)
-    await update.message.reply_text(
-        f"✅ All set! Splitting with: {names}\n\n"
-        f"Now just send me a grocery invoice PDF anytime.",
-    )
-    return ConversationHandler.END
+    # Check for common Splitwise groups
+    user = db.get_user(tid)
+    try:
+        sw = SplitwiseClient(user["splitwise_token"])
+        member_ids = [f["id"] for f in pending]
+        matching_groups = sw.find_group_with_members(member_ids)
+    except Exception as e:
+        logger.error(f"Group detection error: {e}")
+        matching_groups = []
+
+    if len(matching_groups) == 1:
+        # Exactly one group — confirm it
+        group = matching_groups[0]
+        context.user_data["pending_group"] = group
+        await update.message.reply_text(
+            f"Found your Splitwise group: *{group['name']}*\n\n"
+            f"Add expenses to this group? Type `yes` or `skip` to add individually.",
+            parse_mode="Markdown",
+        )
+        return CONFIRM_GROUP
+
+    elif len(matching_groups) > 1:
+        # Multiple groups — ask which one
+        context.user_data["pending_groups"] = matching_groups
+        lines = ["Found multiple Splitwise groups with these people:\n"]
+        for i, g in enumerate(matching_groups, 1):
+            lines.append(f"  `{i}.` {g['name']}")
+        lines.append(f"\nReply with the number, or `skip` to add individually.")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        return CONFIRM_GROUP
+
+    else:
+        # No group found
+        db.update_user(tid, setup_complete=True)
+        names = ", ".join(f["name"] for f in pending)
+        await update.message.reply_text(
+            f"✅ All set! Splitting with: {names}\n"
+            f"No common Splitwise group found — expenses will be added individually.\n\n"
+            f"Send me a grocery invoice PDF anytime.",
+        )
+        return ConversationHandler.END
 
 
 # ── Invoice Processing ──
@@ -503,6 +537,7 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 payer_id=my_sw_id,
                 shares=sw_shares,
                 details=details,
+                group_id=user.get("splitwise_group_id"),
             )
 
             lines = ["✅ *Logged to Splitwise!*\n"]
@@ -552,6 +587,54 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("Cancelled. Send a new invoice whenever.")
     return ConversationHandler.END
+
+
+async def handle_confirm_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle group selection confirmation."""
+    tid = update.effective_user.id
+    text = update.message.text.strip().lower()
+
+    if text == "skip":
+        db.update_user(tid, setup_complete=True)
+        await update.message.reply_text(
+            "✅ All set! Expenses will be added individually.\n\n"
+            "Send me a grocery invoice PDF anytime.",
+        )
+        return ConversationHandler.END
+
+    # Single group confirmation
+    pending_group = context.user_data.get("pending_group")
+    if pending_group:
+        if text in ("yes", "y", "ok"):
+            db.update_user(tid, setup_complete=True, splitwise_group_id=pending_group["id"])
+            await update.message.reply_text(
+                f"✅ All set! Expenses will go to *{pending_group['name']}*.\n\n"
+                f"Send me a grocery invoice PDF anytime.",
+                parse_mode="Markdown",
+            )
+            context.user_data.pop("pending_group", None)
+            return ConversationHandler.END
+        else:
+            await update.message.reply_text("Type `yes` to use this group or `skip` to add individually.", parse_mode="Markdown")
+            return CONFIRM_GROUP
+
+    # Multiple groups — user picks by number
+    pending_groups = context.user_data.get("pending_groups", [])
+    if text.isdigit():
+        idx = int(text) - 1
+        if 0 <= idx < len(pending_groups):
+            group = pending_groups[idx]
+            db.update_user(tid, setup_complete=True, splitwise_group_id=group["id"])
+            await update.message.reply_text(
+                f"✅ All set! Expenses will go to *{group['name']}*.\n\n"
+                f"Send me a grocery invoice PDF anytime.",
+                parse_mode="Markdown",
+            )
+            context.user_data.pop("pending_groups", None)
+            return ConversationHandler.END
+
+    await update.message.reply_text("Reply with the group number or `skip`.", parse_mode="Markdown")
+    return CONFIRM_GROUP
 
 
 # ── Web Server (aiohttp) ──
@@ -641,6 +724,10 @@ async def main():
             CONFIRM_FLATMATES: [
                 MessageHandler(filters.Document.PDF, handle_pdf),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confirm_flatmates),
+            ],
+            CONFIRM_GROUP: [
+                MessageHandler(filters.Document.PDF, handle_pdf),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_confirm_group),
             ],
             AWAITING_TAGS: [
                 MessageHandler(filters.Document.PDF, handle_pdf),
