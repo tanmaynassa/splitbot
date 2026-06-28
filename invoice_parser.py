@@ -165,17 +165,21 @@ def format_item_list(parsed: dict, flatmate_names: list) -> str:
     lines.append("`mine: 1,2`")
     for name in flatmate_names:
         lines.append(f"`{name.lower()}: 3`")
+    lines.append(f"`me+{flatmate_names[0].lower()}: 4`  _(split item between specific people)_")
     lines.append("`rest split among: me, name`  _(optional — default: everyone)_")
     lines.append("\nOr type `all` if everything splits equally.")
 
     return "\n".join(lines)
 
 
-def compute_split(items: list, personal_indices: list, flatmate_tagged: dict, flatmate_ids: dict, num_splitters: int, split_among: dict = None, extra_charges: float = 0) -> dict:
+def compute_split(items: list, personal_indices: list, flatmate_tagged: dict, flatmate_ids: dict, num_splitters: int, split_among: dict = None, extra_charges: float = 0, group_splits: list = None) -> dict:
     """
     Compute the expense split.
-    extra_charges: delivery fees etc. — split among the sharing group.
+    group_splits: list of {"people": [{"type": "self"} or {"type": "flatmate", "id": ..., "name": ...}], "srs": [item numbers]}
     """
+    if group_splits is None:
+        group_splits = []
+
     personal_total = 0.0
     shared_total = 0.0
 
@@ -183,6 +187,12 @@ def compute_split(items: list, personal_indices: list, flatmate_tagged: dict, fl
     shared_items = []
     flatmate_items = {}
     flatmate_totals = {}
+    group_split_items = []  # [{"item": item, "people": [...], "per_person": amount}]
+
+    # Collect group split SR numbers
+    group_split_srs = set()
+    for gs in group_splits:
+        group_split_srs.update(gs["srs"])
 
     all_flatmate_srs = set()
     for fm_name, srs in flatmate_tagged.items():
@@ -196,16 +206,43 @@ def compute_split(items: list, personal_indices: list, flatmate_tagged: dict, fl
             flatmate_items[fm_id] = []
             flatmate_totals[fm_id] = 0.0
 
+    # Initialize shares
+    shares = {"user": 0.0}
+    for fm_name, fm_id in flatmate_ids.items():
+        shares[fm_id] = 0.0
+
     for item in items:
         if item["sr"] in personal_indices:
             personal_total += item["amount"]
             personal_items.append(item)
+            shares["user"] += item["amount"]
         elif item["sr"] in all_flatmate_srs:
             for fm_name, srs in flatmate_tagged.items():
                 if item["sr"] in srs:
                     fm_id = flatmate_ids[fm_name]
                     flatmate_items[fm_id].append(item)
                     flatmate_totals[fm_id] += item["amount"]
+                    shares[fm_id] += item["amount"]
+                    break
+        elif item["sr"] in group_split_srs:
+            # Find which group split this item belongs to
+            for gs in group_splits:
+                if item["sr"] in gs["srs"]:
+                    num_people = len(gs["people"])
+                    per_person = round(item["amount"] / num_people, 2)
+                    people_names = []
+                    for p in gs["people"]:
+                        if p["type"] == "self":
+                            shares["user"] += per_person
+                            people_names.append("You")
+                        else:
+                            shares[p["id"]] += per_person
+                            people_names.append(p["name"].title())
+                    group_split_items.append({
+                        "item": item,
+                        "people": people_names,
+                        "per_person": per_person,
+                    })
                     break
         else:
             shared_total += item["amount"]
@@ -219,33 +256,31 @@ def compute_split(items: list, personal_indices: list, flatmate_tagged: dict, fl
     else:
         actual_splitters = num_splitters
 
-    # Add delivery charges to shared pool
     shared_pool = shared_total + extra_charges
     shared_each = round(shared_pool / actual_splitters, 2) if actual_splitters > 0 else 0
 
-    # Calculate shares
-    shares = {}
-
-    if split_among is None or split_among["include_self"]:
-        shares["user"] = round(personal_total + shared_each, 2)
+    # Add shared portion to shares
+    if split_among is None:
+        shares["user"] += shared_each
+        for fm_name, fm_id in flatmate_ids.items():
+            shares[fm_id] += shared_each
     else:
-        shares["user"] = round(personal_total, 2)
+        if split_among["include_self"]:
+            shares["user"] += shared_each
+        for fm_id in split_among["flatmate_ids"]:
+            shares[fm_id] += shared_each
 
-    for fm_name, fm_id in flatmate_ids.items():
-        personal_fm = flatmate_totals.get(fm_id, 0)
-        if split_among is None:
-            shares[fm_id] = round(personal_fm + shared_each, 2)
-        elif fm_id in split_among["flatmate_ids"]:
-            shares[fm_id] = round(personal_fm + shared_each, 2)
-        else:
-            shares[fm_id] = round(personal_fm, 2)
+    # Round all shares
+    for key in shares:
+        shares[key] = round(shares[key], 2)
 
-    order_total = round(personal_total + shared_total + extra_charges + sum(flatmate_totals.values()), 2)
+    order_total = round(personal_total + shared_total + extra_charges + sum(flatmate_totals.values()) + sum(gs["item"]["amount"] for gs in group_split_items), 2)
 
     return {
         "personal_items": personal_items,
         "shared_items": shared_items,
         "flatmate_items": flatmate_items,
+        "group_split_items": group_split_items,
         "personal_total": personal_total,
         "shared_total": shared_total,
         "extra_charges": extra_charges,
@@ -276,6 +311,11 @@ def format_split_summary(split: dict, order_date: str, user_name: str, flatmate_
         names = ", ".join(i["name"] for i in split["shared_items"])
         lines.append(f"🔀 *Shared (equal split):* ₹{split['shared_total']:.2f} → ₹{split['shared_each']:.2f} each")
         lines.append(f"   _{names}_\n")
+
+    for gs in split.get("group_split_items", []):
+        item = gs["item"]
+        people = " & ".join(gs["people"])
+        lines.append(f"🔗 *{item['name']}:* ₹{item['amount']:.2f} → ₹{gs['per_person']:.2f} each ({people})\n")
 
     if split.get("extra_charges", 0) > 0:
         lines.append(f"🚚 *Delivery/fees:* ₹{split['extra_charges']:.2f} _(split equally)_\n")

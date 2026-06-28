@@ -295,6 +295,7 @@ async def handle_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in ("all", "shared", "all shared", "split all"):
         personal_indices = []
         flatmate_tagged = {}
+        group_splits = []
     else:
         # Parse tags
         personal_indices = []
@@ -310,18 +311,55 @@ async def handle_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 srs = [int(x) for x in re.findall(r'\d+', fm_match.group(1))]
                 flatmate_tagged[fm_key] = srs
 
-        if not mine_match and not flatmate_tagged:
+        # Parse group splits: "me+omisha: 3" or "me + omisha 3,5"
+        group_splits = []  # [{"people": ["me", "omisha"], "srs": [3]}]
+        plus_matches = re.finditer(r"([\w]+(?:\s*\+\s*[\w]+)+)\s*:?\s*([\d,\s]+)", text)
+        for pm in plus_matches:
+            names_raw = [n.strip().lower() for n in pm.group(1).split("+")]
+            srs = [int(x) for x in re.findall(r'\d+', pm.group(2))]
+
+            # Validate all names
+            valid_names = True
+            resolved_people = []  # list of {"type": "self"} or {"type": "flatmate", "id": ..., "name": ...}
+            for name in names_raw:
+                if name in ("me", "mine", "myself"):
+                    resolved_people.append({"type": "self"})
+                elif name in fm_lookup:
+                    resolved_people.append({
+                        "type": "flatmate",
+                        "id": fm_lookup[name]["splitwise_user_id"],
+                        "name": name,
+                    })
+                else:
+                    known = ", ".join(fm_lookup.keys())
+                    await update.message.reply_text(
+                        f"❌ Don't know who `{name}` is.\n"
+                        f"Known names: me, {known}",
+                        parse_mode="Markdown",
+                    )
+                    return AWAITING_TAGS
+
+            if srs and resolved_people:
+                group_splits.append({"people": resolved_people, "srs": srs})
+
+        if not mine_match and not flatmate_tagged and not group_splits:
             fm_examples = "\n".join(f"`{name}: 3`" for name in fm_lookup.keys())
             await update.message.reply_text(
                 f"Couldn't understand. Reply like:\n"
-                f"`mine: 1,2`\n{fm_examples}\n\n"
+                f"`mine: 1,2`\n{fm_examples}\n"
+                f"`me+name: 3`  _(split item between specific people)_\n\n"
                 f"Or type `all` if everything splits equally.",
                 parse_mode="Markdown",
             )
             return AWAITING_TAGS
 
+        # Collect all group split SRs
+        group_split_srs = set()
+        for gs in group_splits:
+            group_split_srs.update(gs["srs"])
+
         # Validate item numbers
-        all_tagged = personal_indices + [sr for srs in flatmate_tagged.values() for sr in srs]
+        all_tagged = personal_indices + [sr for srs in flatmate_tagged.values() for sr in srs] + list(group_split_srs)
         invalid = [x for x in all_tagged if x not in valid_srs]
         if invalid:
             await update.message.reply_text(f"Invalid item numbers: {invalid}. Valid: {sorted(valid_srs)}")
@@ -340,6 +378,11 @@ async def handle_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(f"Item {sr} is tagged twice. Fix and resend.")
                     return AWAITING_TAGS
                 all_tagged_set.add(sr)
+        for sr in group_split_srs:
+            if sr in all_tagged_set:
+                await update.message.reply_text(f"Item {sr} is tagged twice. Fix and resend.")
+                return AWAITING_TAGS
+            all_tagged_set.add(sr)
 
     # Parse "split among" / "rest between" — optional line
     split_among_match = re.search(
@@ -388,9 +431,10 @@ async def handle_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
         personal_indices,
         flatmate_tagged,
         flatmate_ids,
-        1 + len(flatmates),  # default num_splitters (everyone)
+        1 + len(flatmates),
         split_among=split_among,
         extra_charges=parsed.get("extra_charges", 0),
+        group_splits=group_splits,
     )
     context.user_data["split"] = split
 
