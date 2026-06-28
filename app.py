@@ -335,26 +335,20 @@ async def handle_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
         personal_indices = []
         flatmate_tagged = {}  # {flatmate_name: [sr_numbers]}
 
-        mine_match = re.search(r"\bmine\b\s*:?\s*([\d,\s]+)", text)
-        if mine_match:
-            personal_indices = [int(x) for x in re.findall(r'\d+', mine_match.group(1))]
+        # Parse group splits FIRST: "me+omisha: 3" or "me + omisha 3,5"
+        group_splits = []
+        plus_pattern = r"([\w]+(?:\s*\+\s*[\w]+)+)\s*:?\s*([\d,\s]+)"
+        plus_matches = list(re.finditer(plus_pattern, text))
 
-        for fm_key, fm_record in fm_lookup.items():
-            fm_match = re.search(rf"\b{fm_key}\b\s*:?\s*([\d,\s]+)", text)
-            if fm_match:
-                srs = [int(x) for x in re.findall(r'\d+', fm_match.group(1))]
-                flatmate_tagged[fm_key] = srs
-
-        # Parse group splits: "me+omisha: 3" or "me + omisha 3,5"
-        group_splits = []  # [{"people": ["me", "omisha"], "srs": [3]}]
-        plus_matches = re.finditer(r"([\w]+(?:\s*\+\s*[\w]+)+)\s*:?\s*([\d,\s]+)", text)
+        # Remove plus patterns from text so they don't interfere with individual parsing
+        clean_text = text
         for pm in plus_matches:
+            clean_text = clean_text.replace(pm.group(0), "")
+
             names_raw = [n.strip().lower() for n in pm.group(1).split("+")]
             srs = [int(x) for x in re.findall(r'\d+', pm.group(2))]
 
-            # Validate all names
-            valid_names = True
-            resolved_people = []  # list of {"type": "self"} or {"type": "flatmate", "id": ..., "name": ...}
+            resolved_people = []
             for name in names_raw:
                 if name in ("me", "mine", "myself"):
                     resolved_people.append({"type": "self"})
@@ -375,6 +369,14 @@ async def handle_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if srs and resolved_people:
                 group_splits.append({"people": resolved_people, "srs": srs})
+
+        # Now parse individual tags from the cleaned text
+        mine_match = re.search(r"\bmine\b\s*:?\s*([\d,\s]+)", clean_text)
+        if mine_match:
+            personal_indices = [int(x) for x in re.findall(r'\d+', mine_match.group(1))]
+
+        for fm_key, fm_record in fm_lookup.items():
+            fm_match = re.search(rf"\b{fm_key}\b\s*:?\s*([\d,\s]+)", clean_text)
 
         if not mine_match and not flatmate_tagged and not group_splits:
             fm_examples = "\n".join(f"`{name}: 3`" for name in fm_lookup.keys())
@@ -418,7 +420,7 @@ async def handle_tags(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return AWAITING_TAGS
             all_tagged_set.add(sr)
 
-    # Parse "split among" / "rest between" — optional line
+    # Parse "split among" / "rest between" — from original text
     split_among_match = re.search(
         r"\b(?:rest split among|rest among|rest between|rest split between|rest)\b\s*:?\s*(.+)",
         text,
