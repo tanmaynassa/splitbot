@@ -58,6 +58,13 @@ class SplitwiseClient:
     def get_current_user(self) -> dict:
         return self._get("get_current_user")["user"]
 
+    def delete_expense(self, expense_id: int) -> bool:
+        """Delete an expense by ID."""
+        r = requests.post(f"{BASE_URL}/delete_expense/{expense_id}", headers=self.headers)
+        r.raise_for_status()
+        result = r.json()
+        return result.get("success", False)
+
     def get_friends(self) -> list:
         return self._get("get_friends")["friends"]
 

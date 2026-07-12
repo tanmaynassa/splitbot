@@ -250,9 +250,9 @@ async def handle_confirm_flatmates(update: Update, context: ContextTypes.DEFAULT
         names = ", ".join(f["name"] for f in pending)
         await update.message.reply_text(
             f"✅ All set! Splitting with: {names}\n"
-            f"No common Splitwise group found — expenses will be added individually.\n\n"
-            f"Send me a grocery invoice PDF anytime.",
+            f"No common Splitwise group found — expenses will be added individually.",
         )
+        await send_onboarding_tutorial(update.get_bot(), update.effective_user.id, [f["name"] for f in pending])
         return ConversationHandler.END
 
 
@@ -554,7 +554,7 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     clean_names.append(name)
             description = ", ".join(clean_names) if clean_names else "Grocery"
 
-            sw.create_expense(
+            result = sw.create_expense(
                 description=description,
                 total_cost=split["order_total"],
                 payer_id=my_sw_id,
@@ -562,6 +562,13 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 details=details,
                 group_id=user.get("splitwise_group_id"),
             )
+
+            # Store last expense ID for undo
+            expenses = result.get("expenses", [])
+            if expenses:
+                last_expense_id = expenses[0].get("id")
+                if last_expense_id:
+                    db.update_user(tid, last_expense_id=last_expense_id)
 
             lines = ["✅ *Logged to Splitwise!*\n"]
             for fm_id, amount in split["shares"].items():
@@ -618,12 +625,73 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛒 *SplitBot — Commands*\n\n"
         "/start — connect Splitwise & set up\n"
         "/setup — change your flatmates\n"
+        "/undo — delete the last expense logged\n"
         "/reset — disconnect and start over\n"
         "/cancel — cancel current operation\n"
         "/help — show this message\n\n"
         "Just send a grocery invoice PDF to split!",
         parse_mode="Markdown",
     )
+
+
+async def undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Delete the last Splitwise expense created by this bot."""
+    tid = update.effective_user.id
+    user = db.get_user(tid)
+
+    if not user or not user.get("splitwise_token"):
+        await update.message.reply_text("You need to connect Splitwise first. Send /start")
+        return
+
+    last_id = user.get("last_expense_id")
+    if not last_id:
+        await update.message.reply_text("No recent expense to undo.")
+        return
+
+    try:
+        sw = SplitwiseClient(user["splitwise_token"])
+        success = sw.delete_expense(int(last_id))
+        if success:
+            db.update_user(tid, last_expense_id=None)
+            await update.message.reply_text("✅ Last expense deleted from Splitwise.")
+        else:
+            await update.message.reply_text("❌ Couldn't delete the expense. It may have already been deleted.")
+    except Exception as e:
+        logger.error(f"Undo error: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def send_onboarding_tutorial(bot, chat_id, flatmate_names):
+    """Send a tutorial walkthrough after first-time setup."""
+    names_lower = [n.split()[0].lower() for n in flatmate_names]
+    first_fm = names_lower[0] if names_lower else "flatmate"
+
+    tutorial = (
+        "🎓 *Quick Tutorial — How to split a bill*\n\n"
+        "*Step 1:* Download the invoice PDF from your grocery app (Zepto/Blinkit/Instamart)\n\n"
+        "*Step 2:* Send the PDF here. I'll show you a numbered list like:\n"
+        "```\n"
+        "1. Milk — ₹30\n"
+        "2. Paneer — ₹95\n"
+        "3. Chips — ₹20\n"
+        "4. Eggs — ₹80\n"
+        "```\n\n"
+        "*Step 3:* Tag items in one message:\n\n"
+        f"  `mine 1,3` — items 1 & 3 are yours\n"
+        f"  `{first_fm} 2` — item 2 is {first_fm}'s\n"
+        f"  `me+{first_fm} 4` — item 4 splits between you two\n"
+        f"  Everything else splits equally among everyone\n\n"
+        "*Optional:*\n"
+        f"  `rest me {first_fm}` — untagged items split only between you & {first_fm}\n"
+        f"  `all` — everything splits equally\n\n"
+        "*Step 4:* Review the summary. Re-tag if wrong, or type `ok` to log to Splitwise.\n\n"
+        "*Other commands:*\n"
+        "  /undo — delete the last expense\n"
+        "  /setup — change flatmates\n\n"
+        "That's it! Send your first invoice PDF whenever you're ready. 🚀"
+    )
+
+    await bot.send_message(chat_id=chat_id, text=tutorial, parse_mode="Markdown")
 
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -640,10 +708,9 @@ async def handle_confirm_group(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if text == "skip":
         db.update_user(tid, setup_complete=True)
-        await update.message.reply_text(
-            "✅ All set! Expenses will be added individually.\n\n"
-            "Send me a grocery invoice PDF anytime.",
-        )
+        await update.message.reply_text("✅ All set! Expenses will be added individually.")
+        flatmates = db.get_flatmates(tid)
+        await send_onboarding_tutorial(update.get_bot(), tid, [f["name"] for f in flatmates])
         return ConversationHandler.END
 
     # Single group confirmation
@@ -652,10 +719,11 @@ async def handle_confirm_group(update: Update, context: ContextTypes.DEFAULT_TYP
         if text in ("yes", "y", "ok"):
             db.update_user(tid, setup_complete=True, splitwise_group_id=pending_group["id"])
             await update.message.reply_text(
-                f"✅ All set! Expenses will go to *{pending_group['name']}*.\n\n"
-                f"Send me a grocery invoice PDF anytime.",
+                f"✅ All set! Expenses will go to *{pending_group['name']}*.",
                 parse_mode="Markdown",
             )
+            flatmates = db.get_flatmates(tid)
+            await send_onboarding_tutorial(update.get_bot(), tid, [f["name"] for f in flatmates])
             context.user_data.pop("pending_group", None)
             return ConversationHandler.END
         else:
@@ -670,10 +738,11 @@ async def handle_confirm_group(update: Update, context: ContextTypes.DEFAULT_TYP
             group = pending_groups[idx]
             db.update_user(tid, setup_complete=True, splitwise_group_id=group["id"])
             await update.message.reply_text(
-                f"✅ All set! Expenses will go to *{group['name']}*.\n\n"
-                f"Send me a grocery invoice PDF anytime.",
+                f"✅ All set! Expenses will go to *{group['name']}*.",
                 parse_mode="Markdown",
             )
+            flatmates = db.get_flatmates(tid)
+            await send_onboarding_tutorial(update.get_bot(), tid, [f["name"] for f in flatmates])
             context.user_data.pop("pending_groups", None)
             return ConversationHandler.END
 
@@ -793,6 +862,7 @@ async def main():
     # Standalone commands (work outside conversations too)
     bot_app.add_handler(CommandHandler("reset", reset))
     bot_app.add_handler(CommandHandler("help", help_cmd))
+    bot_app.add_handler(CommandHandler("undo", undo))
 
     # Catch-all for unrecognized commands
     bot_app.add_handler(MessageHandler(filters.COMMAND, unknown_command))
