@@ -535,8 +535,10 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             fm_display = {f["splitwise_user_id"]: f["name"].split()[0] for f in flatmates}
             details = build_expense_details(split, user.get("splitwise_name", "You"), fm_display)
 
-            platform = parsed.get("platform", "Grocery")
-            description = f"{platform} — {parsed.get('order_date', 'order')}"
+            # Build description from all item names
+            all_items = parsed["items"]
+            short_names = [item["name"].split("(")[0].split("-")[0].strip()[:25] for item in all_items]
+            description = ", ".join(short_names)
 
             sw.create_expense(
                 description=description,
