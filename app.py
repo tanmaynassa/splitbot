@@ -535,10 +535,24 @@ async def handle_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             fm_display = {f["splitwise_user_id"]: f["name"].split()[0] for f in flatmates}
             details = build_expense_details(split, user.get("splitwise_name", "You"), fm_display)
 
-            # Build description from all item names
-            all_items = parsed["items"]
-            short_names = [item["name"].split("(")[0].split("-")[0].strip()[:25] for item in all_items]
-            description = ", ".join(short_names)
+            # Build description from SPLIT items only (not personal)
+            split_items = split["shared_items"] + [
+                item for items in split["flatmate_items"].values() for item in items
+            ] + [gs["item"] for gs in split.get("group_split_items", [])]
+
+            clean_names = []
+            for item in split_items:
+                name = item["name"]
+                name = re.split(r'[|(,]', name)[0].strip()
+                name = re.sub(r'\b\d+(?:g|kg|ml|l)\b', '', name, flags=re.IGNORECASE).strip()
+                name = re.sub(r'\s*\d+\s*[-–]\s*\d+\s*(?:g|kg|ml|l)\b', '', name, flags=re.IGNORECASE).strip()
+                name = re.sub(r'\s*\d+\s*(?:g|kg|ml|l|pack|pcs|pc|pieces)\b.*', '', name, flags=re.IGNORECASE).strip()
+                name = re.sub(r'[\s\-]+$', '', name).strip()
+                name = re.sub(r'\s+\d+\s*$', '', name).strip()
+                name = re.sub(r'\s+', ' ', name).strip()
+                if name:
+                    clean_names.append(name)
+            description = ", ".join(clean_names) if clean_names else "Grocery"
 
             sw.create_expense(
                 description=description,
